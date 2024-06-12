@@ -20,5 +20,5 @@ A simple API built with FastAPI for returning multiple choice questions given a 
 2. Plan for scale and performance => Use pola.rs for loading data in memory. By using lazy evaluation we can deal with large numbers of users/questions in the future (after moving data to a proper database)
 3. Validate data formats. We use [patito](https://github.com/JakobGM/patito) as a data modelling layer ontop of pydantic and pola.rs in order to ensure validity of data
 4. Don't hard code user data or question data => All data that might need to change is stored in the data folder
-4. Customization => The location of the data folder can be changed
+4. Customization => The location of the data folder can be changed using config.env or an environment variable
 5. No special users => Read and write permissions defined per user in users.csv
