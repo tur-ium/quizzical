@@ -1,20 +1,16 @@
-import base64
 import io
 import json
 import os
-import secrets
 from typing import List, Optional, Annotated
-import httpx
 import dotenv
 import polars as pl
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from polars import Boolean, Int8
-import patito as pt
 from starlette import status
 
 from quizzical.QuestionModel import QuestionModel
-from quizzical.UserModel import User
+from quizzical.check_login_credentials import check_login_details
+from tests.async_tests import test_authentication, test_can_load_subjects
 
 dotenv.load_dotenv('config.env')
 
@@ -32,49 +28,6 @@ app = FastAPI(title="Quizzical",
                    'description': 'Endpoints for creating multiple choice questions'}
               ])
 security = HTTPBasic()
-
-
-async def load_usernames_passwords() -> pl.DataFrame:
-    users = pl.read_csv('data/users.csv', has_header=True, schema_overrides={'read': Int8, 'write': Int8})
-    users = users.cast(dtypes={'read': Boolean, 'write': Boolean})
-    print(users)
-    try:
-        assert users.get_column('username').is_unique().all()
-    except AssertionError:
-        raise HTTPException(status_code=500,
-                            detail='Users are not unique in the login database. See the log for exception')
-
-    try:
-        User.validate(users)
-    except pt.exceptions.DataFrameValidationError as exc:
-        print(exc)
-        raise HTTPException(status_code=500, detail='Issue in the login database. See the log for exception')
-    return users
-
-
-async def check_login_details(credentials: Annotated[HTTPBasicCredentials, Depends(security)], debug:Optional[bool] = True):  #
-    username_str = credentials.username #.encode('utf-8')
-    password_str = credentials.password #.encode('utf-8')
-    if debug: print('user', username_str, 'password', password_str)
-
-    valid_logins = await load_usernames_passwords()
-
-    try:
-        if valid_logins.filter((pl.col('username') == username_str)).is_empty():
-            if debug: print('Username is wrong')
-            raise ValueError
-        expected_password: str = valid_logins.filter((pl.col('username') == username_str)).get_column('password').item()
-        password_correct = secrets.compare_digest(password_str, expected_password)
-        if password_correct:
-            if debug: print('Logged in successfully')
-            return True
-        else:
-            if debug: print('Password incorrect')
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Incorrect username or password')
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Incorrect username or password')
-    except HTTPException as e:
-        raise e
 
 
 @app.get("/login", tags=['Authentication'])
@@ -127,45 +80,6 @@ async def ask(credentials: Annotated[HTTPBasicCredentials, Depends(security)], n
     return json.loads(str_obj.getvalue())
 
 
-async def test_authentication():
-    try:
-        user_df = await load_usernames_passwords()
-        first_user = user_df[0]
-        first_username = first_user.get_column('username').item()
-        first_password = first_user.get_column('password').item()
-        auth_string = base64.b64encode(bytes(f'{first_username}:{first_password}', 'utf-8'))
-        print(first_username,first_password)
-        print(auth_string)
-        header = {'Authorization': f'Basic {auth_string.decode("utf-8")}'}
-        print(header)
-        async with httpx.AsyncClient() as client:
-            response = await client.get('http://localhost:8000/login', headers=header)
-            assert 200 <= response.status_code < 300
-    except AssertionError as e:
-        raise HTTPException(status_code=500, detail=f'{e}')
-    return True
-
-
-async def test_can_load_subjects():
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get('http://localhost:8000/subjects')
-            assert 200 <= response.status_code < 300
-            print(response.json())
-            assert len(response.json()) > 1
-    except AssertionError as e:
-        raise HTTPException(status_code=500, detail=f'{e}')
-    return True
-
-
-@app.get('/test', tags=['Authentication'])
-async def test():
-    """Test the API is working by checking the log in of the first user in the database and a simple request to list subjects. Returns True if working, else raises an HttpException with more detail"""
-    await test_authentication()
-    await test_can_load_subjects()
-    return True
-
-
 @app.put('/add', tags=['Create'])
 async def add_question(credentials: Annotated[HTTPBasicCredentials, Depends(security)], question: QuestionModel):
     """LOGIN REQUIRED. Insert a new question to the database. The question must have the columns defined in the QuestionModel"""
@@ -176,3 +90,11 @@ async def add_question(credentials: Annotated[HTTPBasicCredentials, Depends(secu
     print(new_row.to_dict())
     q_df = q_df.extend(new_row)
     q_df.write_excel(DATA_LOCATION, engine='openpyxl')
+
+
+@app.get('/test', tags=['Authentication'])
+async def test():
+    """Test the API is working by checking the log in of the first user in the database and a simple request to list subjects. Returns True if working, else raises an HttpException with more detail"""
+    await test_authentication()
+    await test_can_load_subjects()
+    return True
