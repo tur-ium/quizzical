@@ -1,19 +1,20 @@
+import base64
 import io
 import json
 import os
 import secrets
-from collections import OrderedDict
 from typing import List, Optional, Annotated
-
+import httpx
 import dotenv
 import polars as pl
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from polars import Boolean, String, Int8
-from pydantic import BaseModel
+from polars import Boolean, Int8
+import patito as pt
 from starlette import status
 
 from quizzical.QuestionModel import QuestionModel
+from quizzical.UserModel import User
 
 dotenv.load_dotenv('config.env')
 
@@ -33,27 +34,7 @@ app = FastAPI(title="Quizzical",
 security = HTTPBasic()
 
 
-class UserModel(BaseModel):
-    username: str
-    password: str
-    read: bool
-    write: bool
-
-
-import patito as pt
-
-
-class User(pt.Model):
-    username: str = pt.Field(unique=True)
-    password: str
-    read: bool  # Permission to read all questions
-    write: bool  # Permission to write new questions
-
-
-userDFSchema = OrderedDict({'username': String, 'password': String, 'read': Boolean, 'write': Boolean})
-
-
-def load_usernames_passwords() -> pl.DataFrame:
+async def load_usernames_passwords() -> pl.DataFrame:
     users = pl.read_csv('data/users.csv', has_header=True, schema_overrides={'read': Int8, 'write': Int8})
     users = users.cast(dtypes={'read': Boolean, 'write': Boolean})
     print(users)
@@ -71,12 +52,12 @@ def load_usernames_passwords() -> pl.DataFrame:
     return users
 
 
-def check_login_details(credentials: Annotated[HTTPBasicCredentials, Depends(security)], debug:Optional[bool] = True):  #
+async def check_login_details(credentials: Annotated[HTTPBasicCredentials, Depends(security)], debug:Optional[bool] = True):  #
     username_str = credentials.username #.encode('utf-8')
     password_str = credentials.password #.encode('utf-8')
     if debug: print('user', username_str, 'password', password_str)
 
-    valid_logins = load_usernames_passwords()
+    valid_logins = await load_usernames_passwords()
 
     try:
         if valid_logins.filter((pl.col('username') == username_str)).is_empty():
@@ -97,12 +78,12 @@ def check_login_details(credentials: Annotated[HTTPBasicCredentials, Depends(sec
 
 
 @app.get("/login", tags=['Authentication'])
-def login(credentials: Annotated[HTTPBasicCredentials, Depends(security)]):
-    return check_login_details(credentials)
+async def login(credentials: Annotated[HTTPBasicCredentials, Depends(security)]):
+    return await check_login_details(credentials)
 
 
 @app.get('/uses', tags=['List'])
-def list_uses() -> List[str]:
+async def list_uses() -> List[str]:
     """List uses, returns as list of strings"""
     q_df = pl.read_excel(DATA_LOCATION, engine='openpyxl')
     uses_list = q_df.get_column('use').unique().to_list()
@@ -110,7 +91,7 @@ def list_uses() -> List[str]:
 
 
 @app.get('/subjects', tags=['List'])
-def list_subjects() -> List[str]:
+async def list_subjects() -> List[str]:
     """List subjects, returns as list of strings"""
     q_df = pl.read_excel(DATA_LOCATION, engine='openpyxl')
     subject_list = q_df.get_column('subject').unique().to_list()
@@ -118,11 +99,11 @@ def list_subjects() -> List[str]:
 
 
 @app.get("/ask", name='Get questions to ask', tags=['Create'])
-def ask(credentials: Annotated[HTTPBasicCredentials, Depends(security)], n: int = 5, use: Optional[str] = None, subject: Optional[str] = None):
+async def ask(credentials: Annotated[HTTPBasicCredentials, Depends(security)], n: int = 5, use: Optional[str] = None, subject: Optional[str] = None):
     """LOGIN REQUIRED. Gets n randomly-ordered questions from the database with the use `use` and subject `subject`
     n can be 5,10, or 20
     """
-    check_login_details(credentials)
+    await check_login_details(credentials)
 
     if n not in [5, 10, 20]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Number of questions generated should be 5,10 or 20')
@@ -146,15 +127,49 @@ def ask(credentials: Annotated[HTTPBasicCredentials, Depends(security)], n: int 
     return json.loads(str_obj.getvalue())
 
 
+async def test_authentication():
+    try:
+        user_df = await load_usernames_passwords()
+        first_user = user_df[0]
+        first_username = first_user.get_column('username').item()
+        first_password = first_user.get_column('password').item()
+        auth_string = base64.b64encode(bytes(f'{first_username}:{first_password}', 'utf-8'))
+        print(first_username,first_password)
+        print(auth_string)
+        header = {'Authorization': f'Basic {auth_string.decode("utf-8")}'}
+        print(header)
+        async with httpx.AsyncClient() as client:
+            response = await client.get('http://localhost:8000/login', headers=header)
+            assert 200 <= response.status_code < 300
+    except AssertionError as e:
+        raise HTTPException(status_code=500, detail=f'{e}')
+    return True
+
+
+async def test_can_load_subjects():
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get('http://localhost:8000/subjects')
+            assert 200 <= response.status_code < 300
+            print(response.json())
+            assert len(response.json()) > 1
+    except AssertionError as e:
+        raise HTTPException(status_code=500, detail=f'{e}')
+    return True
+
+
 @app.get('/test', tags=['Authentication'])
-def test():
-    return
+async def test():
+    """Test the API is working by checking the log in of the first user in the database and a simple request to list subjects. Returns True if working, else raises an HttpException with more detail"""
+    await test_authentication()
+    await test_can_load_subjects()
+    return True
 
 
 @app.put('/add', tags=['Create'])
-def add_question(credentials: Annotated[HTTPBasicCredentials, Depends(security)], question: QuestionModel):
+async def add_question(credentials: Annotated[HTTPBasicCredentials, Depends(security)], question: QuestionModel):
     """LOGIN REQUIRED. Insert a new question to the database. The question must have the columns defined in the QuestionModel"""
-    check_login_details(credentials)
+    await check_login_details(credentials)
     assert isinstance(question, QuestionModel)
     q_df = pl.read_excel(DATA_LOCATION, engine='openpyxl')
     new_row = pl.DataFrame(question, question.base_field_names)
