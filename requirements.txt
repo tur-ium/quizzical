@@ -1,0 +1,6 @@
+openpyxl
+fastapi~=0.111.0
+polars~=0.20.31
+pydantic~=2.7.3
+python-dotenv~=1.0.1
+patito
