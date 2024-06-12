@@ -14,3 +14,11 @@ A simple API built with FastAPI for returning multiple choice questions given a 
 - Via curl: `curl localhost:8000/login --header "Authorization: Basic {Base64 encoding of "username:password" (as one string)}`
 - Via web browser: Go to `localhost:8000/docs` and enter a username and password from the users database
 3. Go to `localhost:8000/docs` to see the available endpoints and try them out!
+
+# Architecture choices
+1. Keep it simple => This is a minimal working solution. We opt for flat files and relatively simple libraries
+2. Plan for scale and performance => Use pola.rs for loading data in memory. By using lazy evaluation we can deal with large numbers of users/questions in the future (after moving data to a proper database)
+3. Validate data formats. We use [patito](https://github.com/JakobGM/patito) as a data modelling layer ontop of pydantic and pola.rs in order to ensure validity of data
+4. Don't hard code user data or question data => All data that might need to change is stored in the data folder
+4. Customization => The location of the data folder can be changed
+5. No special users => Read and write permissions defined per user in users.csv

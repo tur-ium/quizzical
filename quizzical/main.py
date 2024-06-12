@@ -1,17 +1,15 @@
-import csv
 import io
 import json
 import os
 import secrets
 from collections import OrderedDict
-from typing import List, Optional, Annotated, Literal
+from typing import List, Optional, Annotated
 
 import dotenv
-import patito
 import polars as pl
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from polars import Boolean, String, Binary, Int8
+from polars import Boolean, String, Int8
 from pydantic import BaseModel
 from starlette import status
 
@@ -91,15 +89,15 @@ def check_login_details(credentials: Annotated[HTTPBasicCredentials, Depends(sec
             return True
         else:
             if debug: print('Password incorrect')
-            return False
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Incorrect username or password')
     except ValueError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Incorrect username or password')
     except HTTPException as e:
         raise e
 
 
-@app.get("/login")
-def user(credentials: Annotated[HTTPBasicCredentials, Depends(security)]):
+@app.get("/login", tags=['Authentication'])
+def login(credentials: Annotated[HTTPBasicCredentials, Depends(security)]):
     return check_login_details(credentials)
 
 
@@ -119,25 +117,29 @@ def list_subjects() -> List[str]:
     return subject_list
 
 
-@app.get("/create", tags=['Create'])
-def create(n: int = 5, use: Optional[str] = None, subject: Optional[str] = None):
-    """Gets n randomly-ordered questions from the database with the use `use` and subject `subject`
+@app.get("/ask", name='Get questions to ask', tags=['Create'])
+def ask(credentials: Annotated[HTTPBasicCredentials, Depends(security)], n: int = 5, use: Optional[str] = None, subject: Optional[str] = None):
+    """LOGIN REQUIRED. Gets n randomly-ordered questions from the database with the use `use` and subject `subject`
     n can be 5,10, or 20
     """
+    check_login_details(credentials)
+
     if n not in [5, 10, 20]:
-        raise HTTPException('Number of questions generated should be 5,10 or 20')
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Number of questions generated should be 5,10 or 20')
     # Authentication
 
     q_df = pl.read_excel(DATA_LOCATION, engine='openpyxl')
     ctx = pl.SQLContext(questions=q_df, eager=True)
     results = ctx.execute(f'SELECT * FROM questions')
-    if isinstance(n, int):
-        results = results.limit(n)
     if isinstance(use, str):
         results = results.filter((pl.col('use') == use))
     if isinstance(subject, str):
         results = results.filter(pl.col('subject') == subject)
+    if isinstance(n, int):
+        results = results.limit(n)
+
     # Sort randomly
+    results = results.select(pl.col('*').shuffle())
     str_obj = io.StringIO()
     print(results.write_json(str_obj))
 
@@ -150,8 +152,9 @@ def test():
 
 
 @app.put('/add', tags=['Create'])
-def add_question(question: QuestionModel):
-    """Insert a new question to the database. The question must have the columns defined in the QuestionModel"""
+def add_question(credentials: Annotated[HTTPBasicCredentials, Depends(security)], question: QuestionModel):
+    """LOGIN REQUIRED. Insert a new question to the database. The question must have the columns defined in the QuestionModel"""
+    check_login_details(credentials)
     assert isinstance(question, QuestionModel)
     q_df = pl.read_excel(DATA_LOCATION, engine='openpyxl')
     new_row = pl.DataFrame(question, question.base_field_names)
